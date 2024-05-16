@@ -3,6 +3,7 @@
 use super::{address::Address, regs};
 use crate::masm::RoundingMode;
 use crate::{masm::OperandSize, reg::Reg};
+use cranelift_codegen::ir;
 use cranelift_codegen::isa::aarch64::inst::FPUOpRI::{UShr32, UShr64};
 use cranelift_codegen::isa::aarch64::inst::{
     FPULeftShiftImm, FPUOp1, FPUOp2, FPUOpRI, FPUOpRIMod, FPURightShiftImm, FpuRoundMode,
@@ -18,6 +19,8 @@ use cranelift_codegen::{
     settings, Final, MachBuffer, MachBufferFinalized, MachInstEmit, MachInstEmitState, MachLabel,
     Writable,
 };
+use regalloc2::PRegSet;
+use smallvec::SmallVec;
 
 impl From<OperandSize> for inst::OperandSize {
     fn from(size: OperandSize) -> Self {
@@ -73,6 +76,49 @@ impl Assembler {
 
     fn emit(&mut self, inst: Inst) {
         inst.emit(&mut self.buffer, &self.emit_info, &mut self.emit_state);
+    }
+
+    /// Emit a call to an unknown location through a register.
+    pub fn call_with_reg(&mut self, callee: Reg, calee_pop_size: u32) {
+        self.emit(Inst::CallInd {
+            info: Box::new(inst::CallIndInfo {
+                rn: callee.into(),
+                uses: SmallVec::default(),
+                defs: SmallVec::default(),
+                clobbers: PRegSet::default(),
+                opcode: ir::Opcode::CallIndirect,
+                caller_callconv: cranelift_codegen::isa::CallConv::Winch,
+                callee_callconv: cranelift_codegen::isa::CallConv::Winch,
+                callee_pop_size: calee_pop_size,
+            }),
+        });
+    }
+
+    /// Emit a call to a locally defined function through an index.
+    pub fn call_with_name(&mut self, name: ir::UserExternalNameRef, calee_pop_size: u32) {
+        let dest = ir::ExternalName::user(name);
+        self.emit(Inst::Call {
+            info: Box::new(inst::CallInfo {
+                dest: dest,
+                uses: SmallVec::default(),
+                defs: SmallVec::default(),
+                clobbers: PRegSet::default(),
+                opcode: ir::Opcode::Call,
+                caller_callconv: cranelift_codegen::isa::CallConv::Winch,
+                callee_callconv: cranelift_codegen::isa::CallConv::Winch,
+                callee_pop_size: calee_pop_size,
+            }),
+        });
+    }
+
+    /// Emit a call to a well-known libcall.
+    pub fn call_with_lib(&mut self, lib: ir::LibCall, dst: Reg, calee_pop_size: u32) {
+        self.emit(Inst::LoadExtName {
+            rd: dst,
+            name: Box::new(ir::ExternalName::LibCall(lib)),
+            offset: 0,
+        });
+        self.call_with_reg(dst, calee_pop_size);
     }
 
     /// Load a constant into a register.

@@ -1,6 +1,6 @@
 use super::{abi::Aarch64ABI, address::Address, asm::Assembler, regs};
 use crate::{
-    abi::{self, local::LocalSlot},
+    abi::{self, align_to, calculate_frame_adjustment, local::LocalSlot, vmctx, ABI},
     codegen::{ptr_type_from_ptr_size, CodeGenContext, FuncEnv},
     isa::reg::Reg,
     masm::{
@@ -120,8 +120,8 @@ impl Masm for MacroAssembler {
         todo!()
     }
 
-    fn address_at_vmctx(&self, _offset: u32) -> Self::Address {
-        todo!()
+    fn address_at_vmctx(&self, offset: u32) -> Self::Address {
+        Address::offset(vmctx!(Self), offset.into())
     }
 
     fn store_ptr(&mut self, src: Reg, dst: Self::Address) {
@@ -152,18 +152,30 @@ impl Masm for MacroAssembler {
 
     fn call(
         &mut self,
-        _stack_args_size: u32,
-        _load_callee: impl FnMut(&mut Self) -> CalleeKind,
+        stack_args_size: u32,
+        mut load_callee: impl FnMut(&mut Self) -> CalleeKind,
     ) -> u32 {
-        todo!()
+        let alignment: u32 = <Self::ABI as abi::ABI>::call_stack_align().into();
+        let addend: u32 = <Self::ABI as abi::ABI>::arg_base_offset().into();
+        let delta = calculate_frame_adjustment(self.sp_offset().as_u32(), addend, alignment);
+        let aligned_args_size = align_to(stack_args_size, alignment);
+        let total_stack = delta + aligned_args_size;
+        self.reserve_stack(total_stack);
+        let callee = load_callee(self);
+        match callee {
+            CalleeKind::Indirect(reg) => self.asm.call_with_reg(reg, total_stack),
+            CalleeKind::Direct(idx) => self.asm.call_with_name(idx, total_stack),
+            CalleeKind::LibCall(lib) => self.asm.call_with_lib(lib, regs::scratch(), total_stack),
+        };
+        total_stack
     }
 
     fn load(&mut self, src: Address, dst: Reg, size: OperandSize) {
         self.asm.ldr(src, dst, size);
     }
 
-    fn load_ptr(&mut self, _src: Self::Address, _dst: Reg) {
-        todo!()
+    fn load_ptr(&mut self, src: Self::Address, dst: Reg) {
+        self.load(src, dst, self.ptr_size);
     }
 
     fn wasm_load(
